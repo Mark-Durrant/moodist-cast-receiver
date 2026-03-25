@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<!--
+  Moodist Cast Web Receiver
+  =========================
+  This page runs on the Chromecast device. It:
+    1. Loads the Moodist web app in a full-screen iframe
+    2. Listens for state messages from the Android sender app
+    3. Applies the state (sounds, volumes, play/pause) to the Moodist instance
+
+  Hosting:
+    - Host this file on a publicly accessible HTTPS URL
+    - Register that URL in the Google Cast Developer Console as your Receiver URL
+    - Use the resulting App ID in CastOptionsProvider.kt
+
+  Message format received from sender:
+    {
+      "isPlaying": true,
+      "globalVolume": 0.8,
+      "sounds": {
+        "rain-light": { "selected": true, "volume": 0.7 },
+        "campfire":   { "selected": true, "volume": 0.5 }
+      }
+    }
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Moodist</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #111827; }
+    #frame {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+    #status {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      background: rgba(0,0,0,0.6);
+      color: #4ade80;
+      font-family: sans-serif;
+      font-size: 13px;
+      padding: 6px 12px;
+      border-radius: 20px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    #status.visible { opacity: 1; }
+  </style>
+</head>
+<body>
+  <iframe id="frame" src="https://moodist.mvze.net/" allow="autoplay; fullscreen"></iframe>
+  <div id="status" id="status">Connected</div>
+
+  <!-- Google Cast Receiver SDK -->
+  <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+
+  <script>
+    const MOODIST_NAMESPACE = 'urn:x-cast:com.moodist.state';
+    const frame = document.getElementById('frame');
+    const statusEl = document.getElementById('status');
+
+    // ── Cast Receiver setup ──────────────────────────────────────────────────
+    const context = cast.framework.CastReceiverContext.getInstance();
+    const options = new cast.framework.CastReceiverOptions();
+
+    // Keep the receiver alive even when no media is playing
+    options.disableIdleTimeout = true;
+
+    // Register our custom message namespace
+    context.addCustomMessageListener(MOODIST_NAMESPACE, (event) => {
+      handleMessage(event.data);
+    });
+
+    context.start(options);
+
+    // ── Message handling ─────────────────────────────────────────────────────
+    function handleMessage(data) {
+      showStatus('Syncing…');
+
+      // Parse if it's a string
+      const msg = typeof data === 'string' ? JSON.parse(data) : data;
+
+      if (msg.command === 'play') {
+        applyToFrame({ isPlaying: true });
+      } else if (msg.command === 'pause') {
+        applyToFrame({ isPlaying: false });
+      } else {
+        // Full state sync
+        applyToFrame(msg);
+      }
+    }
+
+    function applyToFrame(state) {
+      // Wait for the iframe to be ready before sending
+      if (!frameReady) {
+        pendingState = state;
+        return;
+      }
+      frame.contentWindow.postMessage({
+        type: 'MOODIST_SET_STATE',
+        state: state
+      }, 'https://moodist.mvze.net');
+    }
+
+    var frameReady = false;
+    var pendingState = null;
+
+    frame.addEventListener('load', () => {
+      frameReady = true;
+      showStatus('Ready');
+
+      // Inject listener script into the iframe
+      try {
+        injectStateListener();
+      } catch(e) {
+        console.warn('Could not inject into iframe (cross-origin). Using postMessage only.', e);
+      }
+
+      if (pendingState) {
+        applyToFrame(pendingState);
+        pendingState = null;
+      }
+    });
+
+    // ── Injected script into Moodist iframe ──────────────────────────────────
+    // Because moodist.mvze.net is cross-origin, we use postMessage.
+    // The Moodist app needs a small snippet to listen for MOODIST_SET_STATE.
+    // Since we can't modify the hosted site, we rely on Moodist's Zustand stores
+    // being accessible after the page loads — we inject via the iframe's
+    // contentWindow only when same-origin (e.g. if you self-host Moodist).
+    function injectStateListener() {
+      const win = frame.contentWindow;
+      win.addEventListener('message', (e) => {
+        if (e.origin !== window.location.origin && e.origin !== 'https://moodist.mvze.net') return;
+        if (!e.data || e.data.type !== 'MOODIST_SET_STATE') return;
+        applyStateToMoodist(e.data.state, win);
+      });
+    }
+
+    window.addEventListener('message', (e) => {
+      if (e.source !== frame.contentWindow) return;
+      if (e.data && e.data.type === 'MOODIST_READY') {
+        frameReady = true;
+        if (pendingState) {
+          applyToFrame(pendingState);
+          pendingState = null;
+        }
+      }
+    });
+
+    function applyStateToMoodist(state, win) {
+      if (!win || !win.__moodistStores) return;
+      try {
+        const { soundStore, playerStore } = win.__moodistStores;
+
+        if (state.sounds && soundStore) {
+          const currentSounds = soundStore.getState().sounds || {};
+          Object.entries(state.sounds).forEach(([id, s]) => {
+            if (s.selected && !currentSounds[id]?.selected) {
+              soundStore.getState().selectSound(id);
+            } else if (!s.selected && currentSounds[id]?.selected) {
+              soundStore.getState().unselectSound(id);
+            }
+            if (s.volume !== undefined) {
+              soundStore.getState().setVolume(id, s.volume);
+            }
+          });
+        }
+
+        if (playerStore) {
+          if (state.globalVolume !== undefined) {
+            playerStore.getState().setVolume(state.globalVolume);
+          }
+          const isCurrentlyPlaying = playerStore.getState().isPlaying;
+          if (state.isPlaying && !isCurrentlyPlaying) {
+            playerStore.getState().play();
+          } else if (!state.isPlaying && isCurrentlyPlaying) {
+            playerStore.getState().pause();
+          }
+        }
+      } catch(e) {
+        console.warn('Could not apply state to Moodist:', e);
+      }
+    }
+
+    // ── Status indicator ─────────────────────────────────────────────────────
+    var statusTimer = null;
+    function showStatus(text) {
+      statusEl.textContent = text;
+      statusEl.classList.add('visible');
+      clearTimeout(statusTimer);
+      statusTimer = setTimeout(() => {
+        statusEl.classList.remove('visible');
+      }, 2500);
+    }
+  </script>
+</body>
+</html>
