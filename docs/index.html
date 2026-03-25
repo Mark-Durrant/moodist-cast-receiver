@@ -1,203 +1,314 @@
 <!DOCTYPE html>
 <!--
-  Moodist Cast Web Receiver
-  =========================
-  This page runs on the Chromecast device. It:
-    1. Loads the Moodist web app in a full-screen iframe
-    2. Listens for state messages from the Android sender app
-    3. Applies the state (sounds, volumes, play/pause) to the Moodist instance
+  Moodist Cast Web Receiver — Standalone Audio Player
+  ====================================================
+  Runs on the Chromecast. Plays Moodist audio directly via Howler.js.
+  Receives state (selected sounds + volumes) from the Android sender app
+  via the Cast custom message channel and applies it in real time.
 
-  Hosting:
-    - Host this file on a publicly accessible HTTPS URL
-    - Register that URL in the Google Cast Developer Console as your Receiver URL
-    - Use the resulting App ID in CastOptionsProvider.kt
-
-  Message format received from sender:
-    {
-      "isPlaying": true,
-      "globalVolume": 0.8,
-      "sounds": {
-        "rain-light": { "selected": true, "volume": 0.7 },
-        "campfire":   { "selected": true, "volume": 0.5 }
-      }
-    }
+  No iframe — avoids all cross-origin restrictions.
 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Moodist</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #111827; }
-    #frame {
-      width: 100%;
-      height: 100%;
-      border: none;
+    html, body {
+      width: 100%; height: 100%;
+      background: #09090b;
+      color: #fafafa;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+    }
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background:
+        radial-gradient(ellipse at 30% 40%, rgba(74,222,128,0.07) 0%, transparent 60%),
+        radial-gradient(ellipse at 70% 70%, rgba(59,130,246,0.05) 0%, transparent 55%);
+      pointer-events: none;
+    }
+    #header {
+      position: fixed;
+      top: 48px; left: 0; right: 0;
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+    }
+    #logo { width: 52px; height: 52px; opacity: 0.9; }
+    #app-title {
+      font-size: 26px; font-weight: 600;
+      letter-spacing: 0.08em; color: #fafafa; opacity: 0.9;
+    }
+    #sounds-container {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      display: flex; flex-wrap: wrap;
+      justify-content: center; gap: 12px;
+      max-width: 80vw;
+    }
+    .sound-pill {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 999px;
+      padding: 8px 20px;
+      font-size: 15px; color: #d1fae5;
+      display: flex; align-items: center; gap: 8px;
+      animation: fadeIn 0.4s ease;
+    }
+    .sound-pill .vol { font-size: 12px; opacity: 0.5; color: #fff; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.9); }
+      to   { opacity: 1; transform: scale(1); }
     }
     #status {
       position: fixed;
-      top: 16px;
-      right: 16px;
-      background: rgba(0,0,0,0.6);
-      color: #4ade80;
-      font-family: sans-serif;
-      font-size: 13px;
-      padding: 6px 12px;
-      border-radius: 20px;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.3s;
+      bottom: 32px; left: 0; right: 0;
+      display: flex; align-items: center; justify-content: center; gap: 10px;
+      font-size: 14px; color: rgba(255,255,255,0.4); letter-spacing: 0.04em;
     }
-    #status.visible { opacity: 1; }
+    #status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #4ade80; animation: pulse 2s infinite;
+    }
+    #status-dot.idle { background: rgba(255,255,255,0.2); animation: none; }
+    @keyframes pulse {
+      0%,100% { opacity:1; transform:scale(1); }
+      50%      { opacity:.5; transform:scale(.85); }
+    }
+    #idle-msg {
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%,-50%);
+      text-align: center; opacity: 0.3;
+    }
+    #idle-msg h2 { font-size: 22px; font-weight: 400; margin-bottom: 8px; }
+    #idle-msg p  { font-size: 15px; }
   </style>
 </head>
 <body>
-  <iframe id="frame" src="https://moodist.mvze.net/" allow="autoplay; fullscreen"></iframe>
-  <div id="status" id="status">Connected</div>
 
-  <!-- Google Cast Receiver SDK -->
-  <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+<div id="header">
+  <svg id="logo" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path fill-rule="evenodd" clip-rule="evenodd" fill="#FFFFFF"
+      d="M28.2607 52.3293C22.5798 59.0451 22.5798 68.9548 28.2607 75.6706C28.5737 76.0407 28.904 76.4011 29.2516 76.7507C29.6492 77.1507 30.0608 77.5279 30.4848 77.8825C30.4357 78.433 30.4114 78.9908 30.4131 79.5547C30.4145 80.0477 30.4358 80.5361 30.4761 81.0191C31.2079 89.7849 38.2151 96.7921 46.9809 97.5239C47.4639 97.5642 47.9523 97.5855 48.4453 97.587C49.0092 97.5886 49.567 97.5643 50.1176 97.5152C50.4721 97.9392 50.8494 98.3508 51.2493 98.7484C51.5989 99.096 51.9593 99.4263 52.3294 99.7393C59.0452 105.42 68.9549 105.42 75.6707 99.7393C76.0407 99.4262 76.4011 99.0959 76.7507 98.7484C77.1507 98.3508 77.5279 97.9392 77.8825 97.5152C78.433 97.5643 78.9908 97.5886 79.5547 97.5869C80.0477 97.5855 80.5361 97.5642 81.0192 97.5239C89.7849 96.7921 96.7922 89.7849 97.5239 81.0191C97.5643 80.536 97.5855 80.0476 97.587 79.5547C97.5887 78.9908 97.5644 78.433 97.5152 77.8824C97.9393 77.5279 98.3508 77.1506 98.7484 76.7507C99.096 76.4011 99.4263 76.0407 99.7394 75.6706C105.42 68.9548 105.42 59.0451 99.7393 52.3294C99.4263 51.9593 99.096 51.5989 98.7484 51.2493C98.3508 50.8493 97.9392 50.4721 97.5152 50.1176C97.5643 49.567 97.5886 49.0092 97.587 48.4453C97.5855 47.9523 97.5642 47.4639 97.5239 46.9809C96.7921 38.2151 89.7849 31.2079 81.0191 30.4761C80.5361 30.4358 80.0477 30.4145 79.5547 30.413C78.9908 30.4114 78.433 30.4357 77.8825 30.4848C77.5279 30.0608 77.1507 29.6492 76.7507 29.2516C76.4011 28.904 76.0407 28.5737 75.6706 28.2607C68.9549 22.5798 59.0452 22.5798 52.3294 28.2606C51.9593 28.5737 51.5989 28.904 51.2493 29.2516C50.8494 29.6492 50.4721 30.0608 50.1176 30.4848C49.567 30.4356 49.0093 30.4114 48.4453 30.413C47.9524 30.4145 47.464 30.4357 46.9809 30.4761C38.2151 31.2079 31.2079 38.2151 30.4761 46.9808C30.4358 47.4639 30.4145 47.9523 30.4131 48.4453C30.4114 49.0092 30.4357 49.567 30.4848 50.1175C30.0608 50.4721 29.6492 50.8493 29.2516 51.2493C28.9041 51.5989 28.5738 51.9592 28.2607 52.3293Z"/>
+  </svg>
+  <div id="app-title">moodist</div>
+</div>
 
-  <script>
-    const MOODIST_NAMESPACE = 'urn:x-cast:com.moodist.state';
-    const frame = document.getElementById('frame');
-    const statusEl = document.getElementById('status');
+<div id="idle-msg">
+  <h2>Ready to cast</h2>
+  <p>Select sounds in the Moodist app on your phone</p>
+</div>
 
-    // ── Cast Receiver setup ──────────────────────────────────────────────────
-    const context = cast.framework.CastReceiverContext.getInstance();
-    const options = new cast.framework.CastReceiverOptions();
+<div id="sounds-container"></div>
 
-    // Keep the receiver alive even when no media is playing
-    options.disableIdleTimeout = true;
+<div id="status">
+  <div id="status-dot" class="idle"></div>
+  <span id="status-text">Waiting for connection…</span>
+</div>
 
-    // Register our custom message namespace
-    context.addCustomMessageListener(MOODIST_NAMESPACE, (event) => {
-      handleMessage(event.data);
+<script src="https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.4/howler.min.js"></script>
+<script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+<script>
+  // ── Sound catalogue ────────────────────────────────────────────────────────
+  const B = 'https://moodist.mvze.net';
+  const URLS = {
+    'river':B+'/sounds/nature/river.mp3','waves':B+'/sounds/nature/waves.mp3',
+    'campfire':B+'/sounds/nature/campfire.mp3','wind':B+'/sounds/nature/wind.mp3',
+    'howling-wind':B+'/sounds/nature/howling-wind.mp3',
+    'wind-in-trees':B+'/sounds/nature/wind-in-trees.mp3',
+    'waterfall':B+'/sounds/nature/waterfall.mp3',
+    'walk-in-snow':B+'/sounds/nature/walk-in-snow.mp3',
+    'walk-on-leaves':B+'/sounds/nature/walk-on-leaves.mp3',
+    'walk-on-gravel':B+'/sounds/nature/walk-on-gravel.mp3',
+    'droplets':B+'/sounds/nature/droplets.mp3','jungle':B+'/sounds/nature/jungle.mp3',
+    'light-rain':B+'/sounds/rain/light-rain.mp3',
+    'heavy-rain':B+'/sounds/rain/heavy-rain.mp3',
+    'thunder':B+'/sounds/rain/thunder.mp3',
+    'rain-on-window':B+'/sounds/rain/rain-on-window.mp3',
+    'rain-on-car-roof':B+'/sounds/rain/rain-on-car-roof.mp3',
+    'rain-on-umbrella':B+'/sounds/rain/rain-on-umbrella.mp3',
+    'rain-on-tent':B+'/sounds/rain/rain-on-tent.mp3',
+    'rain-on-leaves':B+'/sounds/rain/rain-on-leaves.mp3',
+    'birds':B+'/sounds/animals/birds.mp3','seagulls':B+'/sounds/animals/seagulls.mp3',
+    'crickets':B+'/sounds/animals/crickets.mp3','wolf':B+'/sounds/animals/wolf.mp3',
+    'owl':B+'/sounds/animals/owl.mp3','frog':B+'/sounds/animals/frog.mp3',
+    'dog-barking':B+'/sounds/animals/dog-barking.mp3',
+    'horse-gallop':B+'/sounds/animals/horse-gallop.mp3',
+    'cat-purring':B+'/sounds/animals/cat-purring.mp3',
+    'crows':B+'/sounds/animals/crows.mp3','whale':B+'/sounds/animals/whale.mp3',
+    'beehive':B+'/sounds/animals/beehive.mp3',
+    'woodpecker':B+'/sounds/animals/woodpecker.mp3',
+    'chickens':B+'/sounds/animals/chickens.mp3','cows':B+'/sounds/animals/cows.mp3',
+    'sheep':B+'/sounds/animals/sheep.mp3',
+    'highway':B+'/sounds/urban/highway.mp3','road':B+'/sounds/urban/road.mp3',
+    'ambulance-siren':B+'/sounds/urban/ambulance-siren.mp3',
+    'busy-street':B+'/sounds/urban/busy-street.mp3',
+    'crowd':B+'/sounds/urban/crowd.mp3','traffic':B+'/sounds/urban/traffic.mp3',
+    'fireworks':B+'/sounds/urban/fireworks.mp3',
+    'cafe':B+'/sounds/places/cafe.mp3','airport':B+'/sounds/places/airport.mp3',
+    'church':B+'/sounds/places/church.mp3','temple':B+'/sounds/places/temple.mp3',
+    'construction-site':B+'/sounds/places/construction-site.mp3',
+    'underwater':B+'/sounds/places/underwater.mp3',
+    'crowded-bar':B+'/sounds/places/crowded-bar.mp3',
+    'night-village':B+'/sounds/places/night-village.mp3',
+    'subway-station':B+'/sounds/places/subway-station.mp3',
+    'office':B+'/sounds/places/office.mp3',
+    'supermarket':B+'/sounds/places/supermarket.mp3',
+    'carousel':B+'/sounds/places/carousel.mp3',
+    'laboratory':B+'/sounds/places/laboratory.mp3',
+    'laundry-room':B+'/sounds/places/laundry-room.mp3',
+    'restaurant':B+'/sounds/places/restaurant.mp3',
+    'library':B+'/sounds/places/library.mp3',
+    'train':B+'/sounds/transport/train.mp3',
+    'inside-a-train':B+'/sounds/transport/inside-a-train.mp3',
+    'airplane':B+'/sounds/transport/airplane.mp3',
+    'submarine':B+'/sounds/transport/submarine.mp3',
+    'sailboat':B+'/sounds/transport/sailboat.mp3',
+    'rowing-boat':B+'/sounds/transport/rowing-boat.mp3',
+    'keyboard':B+'/sounds/things/keyboard.mp3',
+    'typewriter':B+'/sounds/things/typewriter.mp3',
+    'paper':B+'/sounds/things/paper.mp3','clock':B+'/sounds/things/clock.mp3',
+    'wind-chimes':B+'/sounds/things/wind-chimes.mp3',
+    'singing-bowl':B+'/sounds/things/singing-bowl.mp3',
+    'ceiling-fan':B+'/sounds/things/ceiling-fan.mp3',
+    'dryer':B+'/sounds/things/dryer.mp3',
+    'slide-projector':B+'/sounds/things/slide-projector.mp3',
+    'boiling-water':B+'/sounds/things/boiling-water.mp3',
+    'bubbles':B+'/sounds/things/bubbles.mp3',
+    'tuning-radio':B+'/sounds/things/tuning-radio.mp3',
+    'morse-code':B+'/sounds/things/morse-code.mp3',
+    'washing-machine':B+'/sounds/things/washing-machine.mp3',
+    'vinyl-effect':B+'/sounds/things/vinyl-effect.mp3',
+    'windshield-wipers':B+'/sounds/things/windshield-wipers.mp3',
+    'white-noise':B+'/sounds/noise/white-noise.wav',
+    'pink-noise':B+'/sounds/noise/pink-noise.wav',
+    'brown-noise':B+'/sounds/noise/brown-noise.wav',
+    'binaural-delta':B+'/sounds/binaural/binaural-delta.wav',
+    'binaural-theta':B+'/sounds/binaural/binaural-theta.wav',
+    'binaural-alpha':B+'/sounds/binaural/binaural-alpha.wav',
+    'binaural-beta':B+'/sounds/binaural/binaural-beta.wav',
+    'binaural-gamma':B+'/sounds/binaural/binaural-gamma.wav',
+  };
+
+  // ── Audio engine ───────────────────────────────────────────────────────────
+  const howls = {};
+  var globalVol = 1;
+  var masterPlaying = false;
+
+  function getHowl(id) {
+    if (howls[id]) return howls[id];
+    if (!URLS[id]) return null;
+    howls[id] = new Howl({ src: [URLS[id]], loop: true, volume: 0, html5: true });
+    return howls[id];
+  }
+
+  function applyState(state) {
+    if (!state) return;
+    if (typeof state.globalVolume === 'number') globalVol = state.globalVolume;
+    masterPlaying = state.isPlaying !== false;
+    const sounds = state.sounds || {};
+
+    // Stop deselected sounds
+    Object.keys(howls).forEach(id => {
+      if (!sounds[id] || !sounds[id].selected) {
+        const h = howls[id];
+        if (h.playing()) { h.fade(h.volume(), 0, 500); setTimeout(() => h.stop(), 550); }
+      }
     });
 
-    context.start(options);
-
-    // ── Message handling ─────────────────────────────────────────────────────
-    function handleMessage(data) {
-      showStatus('Syncing…');
-
-      // Parse if it's a string
-      const msg = typeof data === 'string' ? JSON.parse(data) : data;
-
-      if (msg.command === 'play') {
-        applyToFrame({ isPlaying: true });
-      } else if (msg.command === 'pause') {
-        applyToFrame({ isPlaying: false });
+    // Start / adjust selected sounds
+    const selected = Object.keys(sounds).filter(id => sounds[id] && sounds[id].selected);
+    selected.forEach(id => {
+      const targetVol = ((sounds[id].volume ?? 1) * globalVol);
+      const h = getHowl(id);
+      if (!h) return;
+      if (masterPlaying) {
+        if (!h.playing()) { h.volume(0); h.play(); h.fade(0, targetVol, 800); }
+        else { h.fade(h.volume(), targetVol, 300); }
       } else {
-        // Full state sync
-        applyToFrame(msg);
-      }
-    }
-
-    function applyToFrame(state) {
-      // Wait for the iframe to be ready before sending
-      if (!frameReady) {
-        pendingState = state;
-        return;
-      }
-      frame.contentWindow.postMessage({
-        type: 'MOODIST_SET_STATE',
-        state: state
-      }, 'https://moodist.mvze.net');
-    }
-
-    var frameReady = false;
-    var pendingState = null;
-
-    frame.addEventListener('load', () => {
-      frameReady = true;
-      showStatus('Ready');
-
-      // Inject listener script into the iframe
-      try {
-        injectStateListener();
-      } catch(e) {
-        console.warn('Could not inject into iframe (cross-origin). Using postMessage only.', e);
-      }
-
-      if (pendingState) {
-        applyToFrame(pendingState);
-        pendingState = null;
+        if (h.playing()) { h.fade(h.volume(), 0, 400); setTimeout(() => h.pause(), 450); }
       }
     });
 
-    // ── Injected script into Moodist iframe ──────────────────────────────────
-    // Because moodist.mvze.net is cross-origin, we use postMessage.
-    // The Moodist app needs a small snippet to listen for MOODIST_SET_STATE.
-    // Since we can't modify the hosted site, we rely on Moodist's Zustand stores
-    // being accessible after the page loads — we inject via the iframe's
-    // contentWindow only when same-origin (e.g. if you self-host Moodist).
-    function injectStateListener() {
-      const win = frame.contentWindow;
-      win.addEventListener('message', (e) => {
-        if (e.origin !== window.location.origin && e.origin !== 'https://moodist.mvze.net') return;
-        if (!e.data || e.data.type !== 'MOODIST_SET_STATE') return;
-        applyStateToMoodist(e.data.state, win);
-      });
-    }
+    updateUI(selected, sounds);
+  }
 
-    window.addEventListener('message', (e) => {
-      if (e.source !== frame.contentWindow) return;
-      if (e.data && e.data.type === 'MOODIST_READY') {
-        frameReady = true;
-        if (pendingState) {
-          applyToFrame(pendingState);
-          pendingState = null;
-        }
-      }
+  function stopAll() {
+    Object.values(howls).forEach(h => {
+      if (h.playing()) { h.fade(h.volume(), 0, 400); setTimeout(() => h.stop(), 450); }
     });
+    updateUI([], {});
+  }
 
-    function applyStateToMoodist(state, win) {
-      if (!win || !win.__moodistStores) return;
-      try {
-        const { soundStore, playerStore } = win.__moodistStores;
+  // ── UI ─────────────────────────────────────────────────────────────────────
+  const $container = document.getElementById('sounds-container');
+  const $idle      = document.getElementById('idle-msg');
+  const $dot       = document.getElementById('status-dot');
+  const $statusTxt = document.getElementById('status-text');
 
-        if (state.sounds && soundStore) {
-          const currentSounds = soundStore.getState().sounds || {};
-          Object.entries(state.sounds).forEach(([id, s]) => {
-            if (s.selected && !currentSounds[id]?.selected) {
-              soundStore.getState().selectSound(id);
-            } else if (!s.selected && currentSounds[id]?.selected) {
-              soundStore.getState().unselectSound(id);
-            }
-            if (s.volume !== undefined) {
-              soundStore.getState().setVolume(id, s.volume);
-            }
-          });
-        }
+  function label(id) {
+    return id.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
 
-        if (playerStore) {
-          if (state.globalVolume !== undefined) {
-            playerStore.getState().setVolume(state.globalVolume);
-          }
-          const isCurrentlyPlaying = playerStore.getState().isPlaying;
-          if (state.isPlaying && !isCurrentlyPlaying) {
-            playerStore.getState().play();
-          } else if (!state.isPlaying && isCurrentlyPlaying) {
-            playerStore.getState().pause();
-          }
-        }
-      } catch(e) {
-        console.warn('Could not apply state to Moodist:', e);
+  function updateUI(selected, sounds) {
+    $container.innerHTML = '';
+    if (selected.length === 0) {
+      $idle.style.display = '';
+      $dot.classList.add('idle');
+      $statusTxt.textContent = masterPlaying ? 'Connected — select sounds on your phone' : 'Paused';
+      return;
+    }
+    $idle.style.display = 'none';
+    $dot.classList.remove('idle');
+    $statusTxt.textContent = masterPlaying ? 'Playing on Chromecast' : 'Paused';
+    selected.forEach(id => {
+      const pill = document.createElement('div');
+      pill.className = 'sound-pill';
+      const pct = Math.round((sounds[id].volume ?? 1) * 100);
+      pill.innerHTML = label(id) + ' <span class="vol">' + pct + '%</span>';
+      $container.appendChild(pill);
+    });
+  }
+
+  // ── Cast Receiver SDK ──────────────────────────────────────────────────────
+  const NAMESPACE = 'urn:x-cast:com.moodist.state';
+  const ctx  = cast.framework.CastReceiverContext.getInstance();
+  const opts = new cast.framework.CastReceiverOptions();
+  opts.disableIdleTimeout = true;
+
+  ctx.addCustomMessageListener(NAMESPACE, event => {
+    try {
+      const d = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+      if (d.command === 'play') {
+        masterPlaying = true;
+        Object.values(howls).forEach(h => { if (!h.playing()) h.play(); });
+        $statusTxt.textContent = 'Playing on Chromecast';
+        $dot.classList.remove('idle');
+      } else if (d.command === 'pause') {
+        masterPlaying = false;
+        Object.values(howls).forEach(h => {
+          if (h.playing()) { h.fade(h.volume(), 0, 400); setTimeout(() => h.pause(), 450); }
+        });
+        $statusTxt.textContent = 'Paused';
+      } else {
+        applyState(d);
       }
-    }
+    } catch(e) { console.error('Cast message error:', e); }
+  });
 
-    // ── Status indicator ─────────────────────────────────────────────────────
-    var statusTimer = null;
-    function showStatus(text) {
-      statusEl.textContent = text;
-      statusEl.classList.add('visible');
-      clearTimeout(statusTimer);
-      statusTimer = setTimeout(() => {
-        statusEl.classList.remove('visible');
-      }, 2500);
-    }
-  </script>
+  ctx.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, () => {
+    $statusTxt.textContent = 'Connected';
+    $dot.classList.remove('idle');
+  });
+
+  ctx.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, () => {
+    stopAll();
+    $dot.classList.add('idle');
+    $statusTxt.textContent = 'Waiting for connection…';
+  });
+
+  ctx.start(opts);
+</script>
 </body>
 </html>
