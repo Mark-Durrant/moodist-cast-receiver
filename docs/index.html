@@ -279,6 +279,25 @@
   const opts = new cast.framework.CastReceiverOptions();
   opts.disableIdleTimeout = true;
 
+  // Buffer any state message that arrives before Howler is ready
+  var pendingState = null;
+  var receiverReady = false;
+
+  function markReady() {
+    if (receiverReady) return;
+    receiverReady = true;
+    // Tell the sender we're ready so it pushes the current state immediately
+    try {
+      ctx.sendCustomMessage(NAMESPACE, undefined, JSON.stringify({ command: 'receiver_ready' }));
+    } catch(e) { console.warn('Could not send ready signal:', e); }
+    // Apply anything that arrived before we were ready
+    if (pendingState) { applyState(pendingState); pendingState = null; }
+  }
+
+  // Howler fires onload for each sound, but we just need the library itself loaded.
+  // We consider the receiver ready once the Cast SDK has started and the page is loaded.
+  window.addEventListener('load', () => setTimeout(markReady, 200));
+
   ctx.addCustomMessageListener(NAMESPACE, event => {
     try {
       const d = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
@@ -294,7 +313,9 @@
         });
         $statusTxt.textContent = 'Paused';
       } else {
-        applyState(d);
+        // Full state update — buffer if not ready yet
+        if (!receiverReady) { pendingState = d; }
+        else { applyState(d); }
       }
     } catch(e) { console.error('Cast message error:', e); }
   });
@@ -302,6 +323,12 @@
   ctx.addEventListener(cast.framework.system.EventType.SENDER_CONNECTED, () => {
     $statusTxt.textContent = 'Connected';
     $dot.classList.remove('idle');
+    // Signal ready in case sender connected after window load
+    if (receiverReady) {
+      try {
+        ctx.sendCustomMessage(NAMESPACE, undefined, JSON.stringify({ command: 'receiver_ready' }));
+      } catch(e) {}
+    }
   });
 
   ctx.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, () => {
